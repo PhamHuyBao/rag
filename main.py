@@ -19,6 +19,49 @@ import os
 from dotenv import load_dotenv
 
 
+def createVectorDb():
+
+    load_dotenv()  # This loads the variables from the .env file
+
+    OPENAI_KEY = os.getenv("OPENAI_KEY")
+    os.environ['OPENAI_API_KEY'] = OPENAI_KEY
+
+    openai_embed_model = OpenAIEmbeddings(model='text-embedding-3-small')
+    wikipedia_filepath = '/home/phambao/Downloads/simplewiki-2020-11-01.jsonl.gz'
+    docs = []
+    with gzip.open(wikipedia_filepath, 'rt', encoding='utf8') as fIn:
+        for line in fIn:
+            data = json.loads(line.strip())
+            #Add documents
+            docs.append({
+                            'metadata': {
+                                            'title': data.get('title'),
+                                            'article_id': data.get('id')
+                            },
+                            'data': ' '.join(data.get('paragraphs')[0:3]) 
+            # restrict data to first 3 paragraphs to run later modules faster
+            })
+    # We subset our data to use a subset of wikipedia documents to run things faster
+    docs = [doc for doc in docs for x in ['india']
+                if x in doc['data'].lower().split()]
+    # Create docs
+    docs = [Document(page_content=doc['data'],
+                    metadata=doc['metadata']) for doc in docs]
+    # Chunk docs
+    splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
+    chunked_docs = splitter.split_documents(docs)
+    # print(chunked_docs[:3])
+
+    # create vector DB of docs and embeddings - takes < 30s on Colab
+    chroma_db = Chroma.from_documents(documents=chunked_docs,
+                                  collection_name='rag_wikipedia_db',
+                                  embedding=openai_embed_model,
+    # need to set the distance function to cosine else it uses Euclidean by default
+    # check https://docs.trychroma.com/guides#changing-the-distance-function
+                                  collection_metadata={"hnsw:space": "cosine"},
+                                  persist_directory="./wikipedia_db")
+    
+
 def main(querry: str): 
 
 
@@ -34,41 +77,6 @@ def main(querry: str):
     
     # details here: https://openai.com/blog/new-embedding-models-and-api-updates
     openai_embed_model = OpenAIEmbeddings(model='text-embedding-3-small')
-
-   
-    # wikipedia_filepath = '/home/phambao/Downloads/simplewiki-2020-11-01.jsonl.gz'
-    # docs = []
-    # with gzip.open(wikipedia_filepath, 'rt', encoding='utf8') as fIn:
-    #     for line in fIn:
-    #         data = json.loads(line.strip())
-    #         #Add documents
-    #         docs.append({
-    #                         'metadata': {
-    #                                         'title': data.get('title'),
-    #                                         'article_id': data.get('id')
-    #                         },
-    #                         'data': ' '.join(data.get('paragraphs')[0:3]) 
-    #         # restrict data to first 3 paragraphs to run later modules faster
-    #         })
-    # # We subset our data to use a subset of wikipedia documents to run things faster
-    # docs = [doc for doc in docs for x in ['india']
-    #             if x in doc['data'].lower().split()]
-    # # Create docs
-    # docs = [Document(page_content=doc['data'],
-    #                 metadata=doc['metadata']) for doc in docs]
-    # # Chunk docs
-    # splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
-    # chunked_docs = splitter.split_documents(docs)
-    # # print(chunked_docs[:3])
-
-    # # create vector DB of docs and embeddings - takes < 30s on Colab
-    # chroma_db = Chroma.from_documents(documents=chunked_docs,
-    #                               collection_name='rag_wikipedia_db',
-    #                               embedding=openai_embed_model,
-    # # need to set the distance function to cosine else it uses Euclidean by default
-    # # check https://docs.trychroma.com/guides#changing-the-distance-function
-    #                               collection_metadata={"hnsw:space": "cosine"},
-    #                               persist_directory="./wikipedia_db")
     
     
     chroma_db = Chroma(
@@ -81,11 +89,6 @@ def main(querry: str):
     similarity_threshold_retriever = chroma_db.as_retriever(search_type="similarity_score_threshold",
                        search_kwargs={"k": 3,                                                                       
                        "score_threshold": 0.3})
-    
-    
-    # query = "what is the capital of India?"
-    # top3_docs = similarity_threshold_retriever.invoke(query)
-    # print(top3_docs)
 
     
 
@@ -122,12 +125,6 @@ def main(querry: str):
     query = "what is the capital of India?"
     top3_docs = similarity_threshold_retriever.invoke(query)
 
-    # for doc in top3_docs:
-    #     print(doc.page_content)
-    #     print('GRADE:', doc_grader.invoke({"question": query, 
-    #                                     "document": doc.page_content}))
-    #     print()
-
 
     # Create RAG prompt for response generation
     prompt = """You are an assistant for question-answering tasks.
@@ -163,13 +160,6 @@ def main(querry: str):
         StrOutputParser()
     )
 
-    # query = "who won the champions league in 2024?"
-    # top3_docs = similarity_threshold_retriever.invoke(query)
-    # result = qa_rag_chain.invoke(
-    #     {"context": top3_docs, "question": query}
-    # )
-    # print(result)
-
 
     # LLM for question rewriting
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
@@ -196,9 +186,6 @@ def main(querry: str):
                             |
                         StrOutputParser())
     
-    # query = "who won the champions league in 2024?"
-    # result = question_rewriter.invoke({"question": query})
-    # doc_grader
 
     tv_search = TavilySearchResults(max_results=3, search_depth='advanced',max_tokens=10000)
 
@@ -262,48 +249,72 @@ def main(querry: str):
                     filtered_docs.append(d)
                 else:
                     print("---GRADE: DOCUMENT NOT RELEVANT---")
-                    web_search_needed = "Yes"
+                    # web_search_needed = "Yes"
                     continue
         else:
             print("---NO DOCUMENTS RETRIEVED---")
             web_search_needed = "Yes"
-        return {"documents": filtered_docs, "question": question, 
-                "web_search_needed": web_search_needed}
+        return {"documents": filtered_docs, "question": question}
     
-    def rewrite_query(state):
-        """
-        Rewrite the query to produce a better question.
-        Args:
-            state (dict): The current graph state
-        Returns:
-            state (dict): Updates question key with a re-phrased or re-written question
-        """
-        print("---REWRITE QUERY---")
-        question = state["question"]
-        documents = state["documents"]
-        # Re-write question
-        better_question = question_rewriter.invoke({"question": question})
-        return {"documents": documents, "question": better_question}
-        
-        from langchain.schema import Document
 
-    def web_search(state):
-        """
-        Web search based on the re-written question.
-        Args:
-            state (dict): The current graph state
-        Returns:
-            state (dict): Updates documents key with appended web results
-        """
-        print("---WEB SEARCH---")
-        question = state["question"]
-        documents = state["documents"]
-        # Web search
-        docs = tv_search.invoke(question)
-        web_results = "\n\n".join([d["content"] for d in docs])
-        web_results = Document(page_content=web_results)
-        documents.append(web_results)
-        return {"documents": documents, "question": question}
+    #-------------ONLY FOR WEBSEARCH------------- 
+    
+    # def rewrite_query(state):
+    #     """
+    #     Rewrite the query to produce a better question.
+    #     Args:
+    #         state (dict): The current graph state
+    #     Returns:
+    #         state (dict): Updates question key with a re-phrased or re-written question
+    #     """
+    #     print("---REWRITE QUERY---")
+    #     question = state["question"]
+    #     documents = state["documents"]
+    #     # Re-write question
+    #     better_question = question_rewriter.invoke({"question": question})
+    #     return {"documents": documents, "question": better_question}
+        
+    #     from langchain.schema import Document
+
+    # def web_search(state):
+    #     """
+    #     Web search based on the re-written question.
+    #     Args:
+    #         state (dict): The current graph state
+    #     Returns:
+    #         state (dict): Updates documents key with appended web results
+    #     """
+    #     print("---WEB SEARCH---")
+    #     question = state["question"]
+    #     documents = state["documents"]
+    #     # Web search
+    #     docs = tv_search.invoke(question)
+    #     web_results = "\n\n".join([d["content"] for d in docs])
+    #     web_results = Document(page_content=web_results)
+    #     documents.append(web_results)
+    #     return {"documents": documents, "question": question}
+
+    # def decide_to_generate(state):
+    # """
+    # Determines whether to generate an answer, or re-generate a question.
+    # Args:
+    #     state (dict): The current graph state
+    # Returns:
+    #     str: Binary decision for next node to call
+    # """
+    # print("---ASSESS GRADED DOCUMENTS---")
+    # web_search_needed = state["web_search_needed"]
+    # if web_search_needed == "Yes":
+    #     # All documents have been filtered check_relevance
+    #     # We will re-generate a new query
+    #     print("---DECISION: SOME or ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, REWRITE QUERY---")
+    #     return "rewrite_query"
+    # else:
+    #     # We have relevant documents, so generate answer
+    #     print("---DECISION: GENERATE RESPONSE---")
+    #     return "generate_answer"
+
+    #---------------------------------------------
 
     def generate_answer(state):
         """
@@ -321,44 +332,27 @@ def main(querry: str):
         return {"documents": documents, "question": question, 
                 "generation": generation}
     
-    def decide_to_generate(state):
-        """
-        Determines whether to generate an answer, or re-generate a question.
-        Args:
-            state (dict): The current graph state
-        Returns:
-            str: Binary decision for next node to call
-        """
-        print("---ASSESS GRADED DOCUMENTS---")
-        web_search_needed = state["web_search_needed"]
-        if web_search_needed == "Yes":
-            # All documents have been filtered check_relevance
-            # We will re-generate a new query
-            print("---DECISION: SOME or ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, REWRITE QUERY---")
-            return "rewrite_query"
-        else:
-            # We have relevant documents, so generate answer
-            print("---DECISION: GENERATE RESPONSE---")
-            return "generate_answer"
+
         
     from langgraph.graph import END, StateGraph
     agentic_rag = StateGraph(GraphState)
     # Define the nodes
     agentic_rag.add_node("retrieve", retrieve)  # retrieve
     agentic_rag.add_node("grade_documents", grade_documents)  # grade documents
-    agentic_rag.add_node("rewrite_query", rewrite_query)  # transform_query
-    agentic_rag.add_node("web_search", web_search)  # web search
+    # agentic_rag.add_node("rewrite_query", rewrite_query)  # transform_query
+    # agentic_rag.add_node("web_search", web_search)  # web search
     agentic_rag.add_node("generate_answer", generate_answer)  # generate answer
     # Build graph
     agentic_rag.set_entry_point("retrieve")
     agentic_rag.add_edge("retrieve", "grade_documents")
-    agentic_rag.add_conditional_edges(
-        "grade_documents",
-        decide_to_generate,
-        {"rewrite_query": "rewrite_query", "generate_answer": "generate_answer"},
-    )
-    agentic_rag.add_edge("rewrite_query", "web_search")
-    agentic_rag.add_edge("web_search", "generate_answer")
+    # agentic_rag.add_conditional_edges(
+    #     "grade_documents",
+    #     decide_to_generate,
+    #     {"rewrite_query": "rewrite_query", "generate_answer": "generate_answer"},
+    # )
+    # agentic_rag.add_edge("rewrite_query", "web_search")
+    # agentic_rag.add_edge("web_search", "generate_answer")
+    agentic_rag.add_edge("grade_documents", "generate_answer")
     agentic_rag.add_edge("generate_answer", END)
     # Compile
     agentic_rag = agentic_rag.compile()

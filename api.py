@@ -1,18 +1,17 @@
 from typing import Union
 
-from fastapi import FastAPI
+
+from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel
 from main import main
 
 app = FastAPI()
 
 
-class Item(BaseModel):
-    name: str
-    price: float
-    is_offer: Union[bool, None] = None
-
 @app.get("/querry/{querryString}")
 def get_querry_rag(querryString: str):
     return main(querryString)
 
+@app.post("/uploadfile/")
+async def create_upload_file(file: UploadFile):
+    return {"filename": file.filename}
